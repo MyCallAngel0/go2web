@@ -2,8 +2,15 @@ import sys
 import socket
 import re
 import ssl
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
+import os
+import json
+import hashlib
+import time
+
+CACHE_DIR = "cache"
+CACHE_MAX_AGE = 600  # seconds
 
 def show_help():
     print("""go2web - Simple HTTP Client
@@ -52,7 +59,7 @@ def make_request(host, path, use_ssl=True):
     if use_ssl:
         sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
 
-    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: 'go2web/1.0'\r\nConnection: close\r\n\r\n"
+    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: go2web/1.0\r\nConnection: close\r\n\r\n"
     sock.sendall(request.encode())
     response = b""
 
@@ -63,24 +70,20 @@ def make_request(host, path, use_ssl=True):
     return response.decode(errors='ignore')
 
 
-def make_request(host, path, use_ssl=True):
-    port = 443 if use_ssl else 80
-    sock = socket.create_connection((host, port))
-    if use_ssl:
-        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+def send_http_request(url, use_cache=True):
+    if not os.path.exists(CACHE_DIR):
+        os.mkdir(CACHE_DIR)
 
-    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: 'go2web/1.0'\r\nConnection: close\r\n\r\n"
-    sock.sendall(request.encode())
-    response = b""
+    cache_key = hashlib.md5(url.encode()).hexdigest()
+    cache_file = os.path.join(CACHE_DIR, cache_key)
 
-    while chunk := sock.recv(4096):
-        response += chunk
+    if use_cache and os.path.exists(cache_file):
+        mtime = os.path.getmtime(cache_file)
+        if time.time() - mtime < CACHE_MAX_AGE:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                return f.read()
 
-    sock.close()
-    return response.decode(errors='ignore')
-
-
-def send_http_request(url):
+    # Ensure the URL has a scheme.
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
 
@@ -91,6 +94,7 @@ def send_http_request(url):
         path += "?" + parsed.query
     scheme = parsed.scheme
     port = 443 if scheme == "https" else 80
+
     try:
         sock = socket.create_connection((host, port))
     except Exception as e:
@@ -101,11 +105,19 @@ def send_http_request(url):
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
         except Exception as e:
             return f"SSL error: {e}"
-    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: go2web/1.0\r\nConnection: close\r\n\r\n"
+
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        f"User-Agent: go2web/1.0\r\n"
+        f"Accept: text/html, application/json\r\n"
+        f"Connection: close\r\n\r\n"
+    )
     try:
         sock.sendall(request.encode())
     except Exception as e:
         return f"Error sending request: {e}"
+
     response = b""
     try:
         while True:
@@ -119,8 +131,44 @@ def send_http_request(url):
         sock.close()
 
     parts = response.split(b"\r\n\r\n", 1)
-    body = parts[1] if len(parts) > 1 else response
-    return body.decode(errors="ignore")
+    if len(parts) < 2:
+        body_bytes = response
+        headers_text = ""
+    else:
+        headers_bytes, body_bytes = parts
+        headers_text = headers_bytes.decode("iso-8859-1")
+
+    header_lines = headers_text.split("\r\n")
+    if header_lines:
+        status_line = header_lines[0]
+        try:
+            status_code = int(status_line.split(" ")[1])
+        except (IndexError, ValueError):
+            status_code = 200
+    else:
+        status_code = 200
+
+    if 300 < status_code < 400:
+        location = None
+        for line in header_lines:
+            if line.lower().startswith("location:"):
+                location = line.split(":", 1)[1].strip()
+                break
+        if location:
+            redirect_url = urljoin(url, location)
+            return send_http_request(redirect_url, use_cache)
+
+    body_string = body_bytes.decode(errors="ignore")
+
+    if use_cache:
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                f.write(body_string)
+        except Exception as e:
+            print(f"Warning: Unable to write to cache: {e}")
+
+    return body_string
+
 
 def handle_search(term):
     query = "+".join(term.split())
