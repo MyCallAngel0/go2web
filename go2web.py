@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import sys
 import socket
 import re
 import ssl
@@ -15,16 +14,6 @@ CACHE_DIR = "cache"
 CACHE_MAX_AGE = 60  # seconds
 
 
-def show_help():
-    help_text = """go2web - Simple HTTP Client
-Usage:
-  go2web -u <URL> [--json]         # Fetch and display content from URL. Use --json to force JSON parsing.
-  go2web -s <search-term> [--json]  # Search term and show top 10 results. Use --json to output JSON.
-  go2web -h                       # Show this help
-"""
-    print(help_text)
-
-
 def strip_html_tags(html):
     no_tags = re.sub(r'<[^>]+>', '', html)
     normalized = re.sub(r'\s+', ' ', no_tags).strip()
@@ -32,15 +21,10 @@ def strip_html_tags(html):
 
 
 def fetch(url, force_json=False):
-    """
-    Simple fetch mode for URL content.
-    If force_json is True, delegate to send_http_request for content negotiation.
-    """
     if force_json:
         return send_http_request(url, force_json=True)
 
     try:
-        # Parse URL to extract host and path.
         parsed = urlparse(url)
         if not parsed.scheme:
             url = "http://" + url
@@ -76,11 +60,6 @@ def fetch(url, force_json=False):
 
 
 def send_http_request(url, use_cache=True, force_json=False):
-    """
-    Sends an HTTP GET request for a full URL, supports caching, follows redirects,
-    and does basic content negotiation.
-    If force_json is True, the Accept header requests JSON.
-    """
     if not os.path.exists(CACHE_DIR):
         os.mkdir(CACHE_DIR)
     cache_key = hashlib.md5(url.encode()).hexdigest()
@@ -111,7 +90,6 @@ def send_http_request(url, use_cache=True, force_json=False):
         except Exception as e:
             return f"SSL error: {e}"
 
-    # Set Accept header based on force_json flag.
     accept_header = "application/json" if force_json else "text/html, application/json"
     request = (
         f"GET {path} HTTP/1.1\r\n"
@@ -149,7 +127,6 @@ def send_http_request(url, use_cache=True, force_json=False):
             status_code = int(header_lines[0].split(" ")[1])
         except (IndexError, ValueError):
             status_code = 200
-    # Follow redirects.
     if status_code in [301, 302, 303, 307, 308]:
         location = None
         for line in header_lines:
@@ -165,7 +142,6 @@ def send_http_request(url, use_cache=True, force_json=False):
             content_type = line.split(":", 1)[1].strip()
             break
     body_string = body_bytes.decode(errors="ignore")
-    # In non-force mode, if response is JSON we try to pretty-print it.
     if not force_json and "application/json" in content_type:
         try:
             json_obj = json.loads(body_string)
@@ -182,11 +158,6 @@ def send_http_request(url, use_cache=True, force_json=False):
 
 
 def handle_search(term, force_json=False):
-    """
-    Uses DuckDuckGo's lite HTML search interface to obtain search results.
-    If force_json is True, outputs the results as a JSON array.
-    Otherwise, prints plain text.
-    """
     query = "+".join(term.split())
     search_url = f"https://html.duckduckgo.com/html/?q={query}"
     raw_response = send_http_request(search_url)
